@@ -1,0 +1,13 @@
+{
+    "//": "Generalized parameters",
+    "//": "DR_CHN_Roundabout_LN,.TestScenarioForScripts,DR_CHN_Merging_ZS0,DR_USA_Intersection_EP0",
+    "scenario_name": "DR_USA_Intersection_EP0",
+    "track_file_number": 0,
+    "load_mode": "vehicle",
+    "lat_origin": 0,
+    "lon_origin": 0,
+    "//": "Input raster parameters",
+    "raster_size": [128,64],
+    "pixel_size": [0.5,0.5],
+    "ego_center": [0.25,0.5]
+}

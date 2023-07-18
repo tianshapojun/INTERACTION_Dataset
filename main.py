@@ -1,10 +1,18 @@
+#!/usr/bin/python3.10  
+# -*- coding: utf-8 -*- 
+#source D:/Software/Anaconda/etc/profile.d/conda.sh
+#cd /d/Code/Interaction_Dataset
+#python D:/Code/INTERACTION_Dataset/main.py
+
+
 import argparse
 import os
 import time
 import matplotlib.pyplot as plt
 import pandas as pd
-import matplotlib.pyplot as plt
+import json
 from utils import map_vis_without_lanelet
+from utils import dataset_reader
 
 N_past_track = 10
 N_future_track = 1
@@ -17,40 +25,39 @@ def is_satisfy(frame_list,past_num,future_num):
             temp_list.append(i)
     return temp_list
 
-def plot_agent(lanelet_map_file,lat_origin,lon_origin):
+def plot_agent(frame_id,track_dictionary,lanelet_map_file,lat_origin,lon_origin,x,y,psd):
     fig, axes = plt.subplots(1, 1)
-    fig.canvas.set_window_title("Interaction Dataset Visualization")
+    #fig.canvas.FigureManagerBase.set_window_title("Interaction Dataset Visualization")
+    fig.canvas.manager.set_window_title("Interaction Dataset Visualization")
     print("Loading map...")
-    map_vis_without_lanelet.draw_map_without_lanelet(lanelet_map_file, axes, lat_origin, lon_origin)
+    map_vis_without_lanelet.draw_map_without_lanelet(lanelet_map_file, axes, lat_origin, lon_origin,x,y,psd)
+    map_vis_without_lanelet.update_objects_plot(frame_id,axes, x, y, psd, track_dictionary)
 
+def plot_raster(track_dictionary,lanelet_map_file, lat_origin, lon_origin, x, y, psd, raster_size, pixel_size, ego_center):
+    #map_vis_without_lanelet.box_raster(track_dictionary, x, y, psd, raster_size, pixel_size, ego_center)
+    map_vis_without_lanelet.map_raster(lanelet_map_file, lat_origin, lon_origin, x, y, psd, raster_size, pixel_size, ego_center)
 
 if __name__ == "__main__":
 
     # provide data to be visualized
     parser = argparse.ArgumentParser()
-    parser.add_argument("scenario_name", type=str, help="Name of the scenario (to identify map and folder for track "
-                                                        "files)", nargs="?")
-    parser.add_argument("track_file_number", type=int, help="Number of the track file (int)", default=0, nargs="?")
-    parser.add_argument("load_mode", type=str, help="Dataset to load (vehicle, pedestrian, or both)", default="vehicle",
-                        nargs="?")
-    parser.add_argument("--start_timestamp", type=int, nargs="?")
-    parser.add_argument("--lat_origin", type=float,
-                        help="Latitude of the reference point for the projection of the lanelet map (float)",
-                        default=0.0, nargs="?")
-    parser.add_argument("--lon_origin", type=float,
-                        help="Longitude of the reference point for the projection of the lanelet map (float)",
-                        default=0.0, nargs="?")
+    parser.add_argument("--N_past_track", type=int, default = 10, nargs="?")
+    parser.add_argument("--N_future_track", type=int, default = 1, nargs="?")
+    parser.add_argument("--config_filename", type=str, default = "D:/Code/INTERACTION_Dataset/config.json")
     args = parser.parse_args()
-    #DR_CHN_Roundabout_LN,.TestScenarioForScripts,DR_CHN_Merging_ZS0,DR_USA_Intersection_EP0
-    args.scenario_name = 'DR_USA_Intersection_EP0'
-    N_past_track = 10
-    N_future_track = 1
+    
+    with open(args.config_filename, 'r') as f:
+        config = json.loads(f.read())
 
-    if args.scenario_name is None:
+    if config["scenario_name"] is None:
         raise IOError("You must specify a scenario. Type --help for help.")
-    if args.load_mode != "vehicle" and args.load_mode != "pedestrian" and args.load_mode != "both":
+    if config["load_mode"] != "vehicle" and config["load_mode"] != "pedestrian" and config["load_mode"] != "both":
         raise IOError("Invalid load command. Use 'vehicle', 'pedestrian', or 'both'")
-
+    
+    # origin is necessary to correctly project the lat lon values of the map to the local
+    # coordinates in which the tracks are provided; defaulting to (0|0) for every scenario
+    lat_origin, lon_origin = config["lat_origin"], config["lon_origin"]
+    
     # check folders and files
     error_string = ""
 
@@ -62,17 +69,17 @@ if __name__ == "__main__":
     maps_dir = os.path.join(root_dir, "maps")
 
     lanelet_map_ending = ".osm"
-    lanelet_map_file = os.path.join(maps_dir, args.scenario_name + lanelet_map_ending)
+    lanelet_map_file = os.path.join(maps_dir, config["scenario_name"] + lanelet_map_ending)
 
-    scenario_dir = os.path.join(tracks_dir, args.scenario_name)
+    scenario_dir = os.path.join(tracks_dir, config["scenario_name"])
 
     track_file_name = os.path.join(
         scenario_dir,
-        "vehicle_tracks_" + str(args.track_file_number).zfill(3) + ".csv"
+        "vehicle_tracks_" + str(config["track_file_number"]).zfill(3) + ".csv"
     )
     pedestrian_file_name = os.path.join(
         scenario_dir,
-        "pedestrian_tracks_" + str(args.track_file_number).zfill(3) + ".csv"
+        "pedestrian_tracks_" + str(config["track_file_number"]).zfill(3) + ".csv"
     )
 
     if not os.path.isdir(tracks_dir):
@@ -93,26 +100,43 @@ if __name__ == "__main__":
         error_string += "Type --help for help."
         raise IOError(error_string)
 
-    # load the tracks
-    print("Loading tracks...")
-    if args.load_mode == 'both':
+
+    # Construct samples
+    print("Constructing samples...")
+    if config["load_mode"] == 'both':
         track_df = pd.read_csv(track_file_name)
         if flag_ped:
             pedestrian_df = pd.read_csv(pedestrian_file_name)
 
-    elif args.load_mode == 'vehicle':
+    elif config["load_mode"] == 'vehicle':
         track_df = pd.read_csv(track_file_name)
-    elif args.load_mode == 'pedestrian':
+    elif config["load_mode"] == 'pedestrian':
         pedestrian_df = pd.read_csv(pedestrian_file_name)
         
+    print('Total:{} scenes'.format(len(list(track_df['case_id'].unique()))))
     agent_sample = []
-    for i in list(track_df['case_id'].unique()):
-        temp = track_df[track_df['case_id'] == i]
+    #for i in list(track_df['case_id'].unique()):
+    for i in range(3):
+        temp = track_df[(track_df['case_id'] == i) & (track_df['agent_type'] == 'car')]
         for j in list(temp['track_id'].unique()):
-            temp_list = list(temp[temp['track_id'] == j]['frame_id'].unique())
-            agent_sample += [{'case_id':int(i),'track_id':j,'frame_id':k} for k in is_satisfy(temp_list, N_past_track, N_future_track)]
+            agent_sample += [ {'case_id':i,'track_id':j,'frame_id':k} for k in is_satisfy(list(temp[temp['track_id'] == j]['frame_id'].unique()), N_past_track, N_future_track)]
+    print('Total:{} samples'.format(len(agent_sample)))
     
-    lat_origin = args.lat_origin  # origin is necessary to correctly project the lat lon values of the map to the local
-    lon_origin = args.lon_origin  # coordinates in which the tracks are provided; defaulting to (0|0) for every scenario
-    plot_agent(lanelet_map_file,lat_origin,lon_origin)
+    
+    i = 34
+    case_id,track_id,frame_id = agent_sample[i]['case_id'],agent_sample[i]['track_id'],agent_sample[i]['frame_id']
+    temp = track_df[(track_df['case_id'] == case_id) & (track_df['track_id'] == track_id) & (track_df['frame_id'] == frame_id)]
+    print(temp['x'].iloc[0],temp['y'].iloc[0],temp['psi_rad'].iloc[0])
+    print(case_id,track_id,frame_id)
+    
+    # load the tracks
+    '''
+    print("Loading tracks using matplotlib...")
+    track_dictionary = dataset_reader.read_tracks(track_file_name,case_id)
+    plot_agent(frame_id,track_dictionary,lanelet_map_file,lat_origin,lon_origin,temp['x'].iloc[0],temp['y'].iloc[0],temp['psi_rad'].iloc[0])
     plt.show()
+    '''
+    
+    
+    track_dictionary = track_df[(track_df['case_id'] == case_id) & (track_df['agent_type'] == 'car') & (track_df['frame_id'] == frame_id)]
+    plot_raster(track_dictionary,lanelet_map_file, lat_origin, lon_origin, temp['x'].iloc[0], temp['y'].iloc[0], temp['psi_rad'].iloc[0], config["raster_size"], config["pixel_size"], config["ego_center"])
