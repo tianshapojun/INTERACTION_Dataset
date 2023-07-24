@@ -12,6 +12,7 @@ import cv2
 
 from . import dict_utils
 from .dataset_types import Track, MotionState
+from .vectorizer import get_relative_pose
 
 CV2_SUB_VALUES = {"shift": 9, "lineType": cv2.LINE_AA}
 CV2_SHIFT_VALUE = 2 ** CV2_SUB_VALUES["shift"]
@@ -166,18 +167,8 @@ def polygon_xy_from_motionstate(ms, width, length, agent_x, agent_y, agent_yaw):
     upright = (ms.x + length / 2., ms.y + width / 2.)
     upleft = (ms.x - length / 2., ms.y + width / 2.)
     temp = rotate_around_center(np.array([lowleft, lowright, upright, upleft]), np.array([ms.x, ms.y]), yaw=ms.psi_rad)
-    #print(temp)
     return np.dot(temp - np.array([agent_x, agent_y]),np.array([[np.cos(agent_yaw), -np.sin(agent_yaw)], [np.sin(agent_yaw), np.cos(agent_yaw)]]))
-
-
-def polygon_xy_from_motionstate_pedest(ms, width, length):
-    assert isinstance(ms, MotionState)
-    lowleft = (ms.x - length / 2., ms.y - width / 2.)
-    lowright = (ms.x + length / 2., ms.y - width / 2.)
-    upright = (ms.x + length / 2., ms.y + width / 2.)
-    upleft = (ms.x - length / 2., ms.y + width / 2.)
-    return np.array([lowleft, lowright, upright, upleft])
-
+    #return temp
 
 def update_objects_plot(frame_id, axes, agent_x, agent_y, agent_yaw, track_dict=None): 
     if track_dict is not None:
@@ -199,6 +190,7 @@ def update_objects_plot(frame_id, axes, agent_x, agent_y, agent_yaw, track_dict=
                                                       zorder=20)
             axes.add_patch(rect)
             temp = np.dot(np.array([ms.x-agent_x, ms.y-agent_y]),np.array([[np.cos(agent_yaw), -np.sin(agent_yaw)], [np.sin(agent_yaw), np.cos(agent_yaw)]]))
+            #temp =[ms.x,ms.y]
             axes.text(temp[0], temp[1] + 2, str(key), horizontalalignment='center', zorder=30)
 
 ##### Rasterization
@@ -216,84 +208,60 @@ def polygon_xy_from_df(x, y, psi_rad, width, length, agent_x, agent_y, agent_yaw
     return np.dot(temp - np.array([agent_x, agent_y]),np.array([[np.cos(agent_yaw), -np.sin(agent_yaw)], [np.sin(agent_yaw), np.cos(agent_yaw)]]))
 
 def box_raster(track_dictionary,x,y,psd,raster_size,pixel_size,ego_center):
+    im = np.zeros((raster_size[1], raster_size[0]))
     world_center_coods = np.array(track_dictionary[['x','y','psi_rad','width','length']])
     hh = np.array([polygon_xy_from_df(i[0],i[1],i[2],i[3],i[4],x,y,psd) for i in world_center_coods]) #Nx4x2
-    hh2 = np.array([ [[j[0]/pixel_size[0] + ego_center[0]*raster_size[0],-j[1]/pixel_size[1] + ego_center[1]*raster_size[1]] for j in i] for i in hh])
-    im = np.zeros((raster_size[1],raster_size[0]))
+    hh2 = np.array([ [[j[0]/pixel_size[0] + ego_center[0]*raster_size[0],-j[1]/pixel_size[1] + (1-ego_center[1])*raster_size[1]] for j in i] for i in hh])
+    #im = np.zeros((raster_size[1],raster_size[0]))
     
-    cv2.fillPoly(im, (hh2* CV2_SHIFT_VALUE).astype(np.int32), color=255,**CV2_SUB_VALUES)
-    plt.imshow(im)
-    plt.show()
-    
-def get_x_y_array(element, point_dict):
-    x_y_list = []
-    for nd in element.findall("nd"):
-        pt_id = int(nd.get("ref"))
-        point = point_dict[pt_id]
-        x_y_list.append([point.x,point.y])
-    return np.array(x_y_list)
+    cv2.fillPoly(im, (hh2* CV2_SHIFT_VALUE).astype(np.int32), color=255, **CV2_SUB_VALUES)
+    return im 
 
 def rotational_sort(list_of_xy_coords):
     cx, cy = list_of_xy_coords.mean(0)
     x, y = list_of_xy_coords.T
     angles = np.arctan2(x-cx, y-cy)
+    #print(cx, cy)
+    #print(x-cx, y-cy)
+    #print(angles)
     indices = np.argsort(angles)
-    return list_of_xy_coords[indices]
+    return [indices,list_of_xy_coords[indices]]
 
-def map_raster(filename, lat_origin, lon_origin,agent_x,agent_y,agent_yaw,raster_size,pixel_size,ego_center):
+def map_raster(map,agent_x,agent_y,agent_yaw,raster_size,pixel_size,ego_center):
     assert agent_yaw == float(agent_yaw)
 
-    projector = LL2XYProjector(lat_origin, lon_origin)
-    e = xml.parse(filename).getroot()
-    #im = np.zeros((raster_size[1],raster_size[0]))
     im = 255 * np.ones(shape=(raster_size[1], raster_size[0], 3), dtype=np.uint8)
+    #im = np.zeros((raster_size[1],raster_size[0],3))
+    im2 = np.zeros((raster_size[1],raster_size[0]))
+    #im2 = 255 * np.ones((raster_size[1],raster_size[0]))
 
-    point_dict = dict()
-    for node in e.findall("node"):
-        point = Point()
-        point.x, point.y = projector.latlon2xy(float(node.get('lat')), float(node.get('lon')))
-        xy2agent(point,agent_x,agent_y,agent_yaw)
-        point.x, point.y = point.x/pixel_size[0] + ego_center[0]*raster_size[0],-point.y/pixel_size[1] + ego_center[1]*raster_size[1]
-        point_dict[int(node.get('id'))] = point
-
-    unknown_linestring_types = list()
-    way_dict = dict()
-    for way in e.findall('way'):
-        x_y_array = get_x_y_array(way, point_dict) # Nx2
-        way_dict[int(way.get('id'))] = x_y_array
-        way_type = get_type(way)
-        if way_type is None:
-            raise RuntimeError("Linestring type must be specified")
-        elif way_type in ["curbstone", "road_border", "guard_rail"]:
-            COLOR = (255, 217, 82)
-        elif way_type in ["line_thin", "line_thick", "pedestrian_marking", "bike_marking", "stop_line"]:
-            COLOR = (17, 17, 31)
-        elif way_type == "virtual":
-            COLOR = (255, 117, 69)
-        elif way_type == "traffic_sign":
+    for key,value in map.way_dict.items():
+        COLOR = value["color"]
+        xy = get_relative_pose(value["position"],np.array([agent_x, agent_y]), agent_yaw)
+        xy[:,0] = xy[:,0]/pixel_size[0] + ego_center[0]*raster_size[0]
+        xy[:,1] = -xy[:,1]/pixel_size[1] + (1-ego_center[1])*raster_size[1]
+        if COLOR == 'None':
             continue
-        else:
-            if way_type not in unknown_linestring_types:
-                unknown_linestring_types.append(way_type)
-            continue
-
-        cv2.polylines(im, [(x_y_array* CV2_SHIFT_VALUE).astype(np.int32)], False, color=COLOR, thickness = 1, **CV2_SUB_VALUES)
+        cv2.polylines(im, [(xy * CV2_SHIFT_VALUE).astype(np.int32)], False, color=COLOR, thickness = 1, **CV2_SUB_VALUES)
         
-    for relation in e.findall('relation'):
-        rel_list = np.zeros([0,2]) 
-        for mb in relation.findall("member"):
-            if mb.get("type") == 'way':
-                mb_id = int(mb.get("ref"))
-                rel_list = np.concatenate((way_dict[mb_id],rel_list),axis = 0)
-                
+    for key,value in map.rel_dict.items():
         #print(relation.get("id"),rel_list.shape)
-        if rel_list.shape[0] > 0:
-            cv2.fillPoly(im, [(rotational_sort(rel_list) * CV2_SHIFT_VALUE).astype(np.int32)], color=(0, 255, 0),**CV2_SUB_VALUES)
-          
-    for i in range(3):
-        plt.subplot(1,3,i+1)    
-        plt.imshow(im[:,:,i])
-    plt.show()
+        #if len(value["position"]) > 0:
+        if len(value["position"]) > 0 :
+            xy_1 = value["position"][0]
+            xy_2 = value["position"][1]
+            temp = list(rotational_sort(np.array([xy_1[0], xy_1[-1], xy_2[0], xy_2[-1]]))[0])
+            if abs(temp.index(0)-temp.index(2)) == 1 or abs(temp.index(1)-temp.index(3)) == 1: 
+                xy = np.concatenate([xy_1,xy_2[::-1]])
+            else:
+                xy = np.concatenate([xy_1,xy_2])
+            xy = get_relative_pose(xy,np.array([agent_x, agent_y]), agent_yaw)
+            xy[:,0] = xy[:,0]/pixel_size[0] + ego_center[0]*raster_size[0]
+            xy[:,1] = -xy[:,1]/pixel_size[1] + (1-ego_center[1])*raster_size[1]
+            #cv2.fillPoly(im2, [(rotational_sort(xy)[1] * CV2_SHIFT_VALUE).astype(np.int32)], color=255,**CV2_SUB_VALUES)
+            cv2.fillPoly(im2, [(xy * CV2_SHIFT_VALUE).astype(np.int32)], color=255,**CV2_SUB_VALUES)
+            #plt.plot(xy[:,0],xy[:,1])
+            #plt.plot(rotational_sort(xy)[1][:,0],rotational_sort(xy)[1][:,1])
+            #plt.show()          
     
-    if len(unknown_linestring_types) != 0:
-        print("Found the following unknown types, did not plot them: " + str(unknown_linestring_types))
+    return im,im2
