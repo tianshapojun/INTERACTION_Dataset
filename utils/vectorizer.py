@@ -74,11 +74,13 @@ def vectorize_ego(track_id, history_num_ego_frames, history_track,current_track,
         "history_positions": history_coords_offset,
         "history_yaws": history_yaws_offset,
         "target_positions": future_coords_offset,
-        "target_yaws": future_yaws_offset
+        "target_yaws": future_yaws_offset[:,np.newaxis],
+        "target_availabilities": np.ones((future_coords_offset.shape[0])).astype(bool),
+        "type":1
     }
     return frame_info
     
-def vectorize_agents(track_id, frame_id, ego_centroid, ego_yaw, history_ego_position, history_ego_yaws, history_track, current_track
+def vectorize_agents(track_id, frame_id, ego_centroid, ego_yaw, history_ego_position, history_ego_yaws, history_track, current_track, future_track
                      , max_agents_distance, other_agents_num, history_num_frames, future_num_frames):
     # compute agent features
     # sequence_length x 2 (two being x, y)
@@ -94,14 +96,22 @@ def vectorize_agents(track_id, frame_id, ego_centroid, ego_yaw, history_ego_posi
     list_agents_to_take = get_other_agents_ids(history_agents_id, cur_agents_id, track_id, other_agents_num)
     
     # Loop to grab history and future for all other agents 
-    all_other_agents_history_positions = np.zeros((other_agents_num, history_num_frames + 1, 2))
-    all_other_agents_history_yaws = np.zeros((other_agents_num, history_num_frames + 1, 1))
-    all_other_agents_history_extents = np.zeros((other_agents_num, history_num_frames + 1, 2))
-    all_other_agents_history_availability = np.zeros((other_agents_num, history_num_frames + 1))
-    all_other_agents_types = np.zeros((other_agents_num,))
-    all_other_agents_track_ids = np.zeros((other_agents_num,))
+    all_other_agents_history_positions = np.zeros((other_agents_num, history_num_frames + 1, 2), dtype=np.float32)
+    all_other_agents_history_yaws = np.zeros((other_agents_num, history_num_frames + 1, 1), dtype=np.float32)
+    all_other_agents_history_extents = np.zeros((other_agents_num, history_num_frames + 1, 2), dtype=np.float32)
+    all_other_agents_history_availability = np.zeros((other_agents_num, history_num_frames + 1), dtype=np.float32)
+    all_other_agents_types = np.zeros((other_agents_num,), dtype=np.float32)
+    all_other_agents_track_ids = np.zeros((other_agents_num,), dtype=np.float32)
+    
+    all_other_agents_future_positions = np.zeros(
+        (other_agents_num, future_num_frames, 2), dtype=np.float32)
+    all_other_agents_future_yaws = np.zeros((other_agents_num, future_num_frames, 1), dtype=np.float32)
+    all_other_agents_future_extents = np.zeros((other_agents_num, future_num_frames, 2), dtype=np.float32)
+    all_other_agents_future_availability = np.zeros(
+        (other_agents_num, future_num_frames), dtype=np.float32)
 
     for idx, agent_id in enumerate(list_agents_to_take):
+        # history
         temp = history_track[history_track['track_id'] == agent_id].sort_values(by = ['frame_id'],axis = 0,ascending = False)
         idx2 = frame_id - np.array(temp['frame_id'])
         all_other_agents_history_positions[idx,idx2,:] = get_relative_pose(np.array(temp[['x','y']]), ego_centroid, ego_yaw)
@@ -110,12 +120,21 @@ def vectorize_agents(track_id, frame_id, ego_centroid, ego_yaw, history_ego_posi
         all_other_agents_history_availability[idx,idx2] = 1
         all_other_agents_types[idx] = 1
         all_other_agents_track_ids[idx] = agent_id
+        # future
+        temp = future_track[future_track['track_id'] == agent_id].sort_values(by = ['frame_id'],axis = 0,ascending = True)
+        idx2 = np.array(temp['frame_id']) - frame_id -1
+        all_other_agents_future_positions[idx,idx2,:] = get_relative_pose(np.array(temp[['x','y']]), ego_centroid, ego_yaw)
+        all_other_agents_future_yaws[idx,idx2,:] = angular_distance(np.array(temp[['psi_rad']]), ego_yaw)
+        all_other_agents_future_extents[idx,idx2,:] = np.array(temp[['length','width']])
+        all_other_agents_future_availability[idx,idx2] = 1
+        all_other_agents_types[idx] = 1
+        all_other_agents_track_ids[idx] = agent_id
     
     # compute other agents features
     # num_other_agents (M) x sequence_length x 2 (two being x, y)
-    agents_points = all_other_agents_history_positions.copy()
+    agents_points = all_other_agents_history_positions.copy().astype(np.float32)
     # num_other_agents (M) x sequence_length x 1
-    agents_yaws = all_other_agents_history_yaws.copy()
+    agents_yaws = all_other_agents_history_yaws.copy().astype(np.float32)
     # num_other_agents (M) x sequence_length x self._vector_length
     other_agents_polyline = np.concatenate([agents_points, agents_yaws], axis=-1)
     other_agents_polyline_availability = all_other_agents_history_availability.copy()
@@ -125,9 +144,14 @@ def vectorize_agents(track_id, frame_id, ego_centroid, ego_yaw, history_ego_posi
             "all_other_agents_history_yaws": all_other_agents_history_yaws,
             "all_other_agents_history_extents": all_other_agents_history_extents,
             "all_other_agents_history_availability": all_other_agents_history_availability.astype(bool),
+            "all_other_agents_future_positions": all_other_agents_future_positions,
+            "all_other_agents_future_yaws": all_other_agents_future_yaws,
+            "all_other_agents_future_extents": all_other_agents_future_extents,
+            "all_other_agents_future_availability": all_other_agents_future_availability.astype(bool),
             "all_other_agents_types": all_other_agents_types,
             "all_other_agents_track_ids": all_other_agents_track_ids,
             "agent_trajectory_polyline": ego_trajectory_polyline,
+            "agent_polyline_availability": np.ones(history_num_frames + 1).astype(bool),
             "other_agents_polyline": other_agents_polyline,
             "other_agents_polyline_availability": other_agents_polyline_availability.astype(bool),
         }
