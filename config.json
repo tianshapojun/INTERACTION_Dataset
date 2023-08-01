@@ -7,10 +7,12 @@
     "lat_origin": 0,
     "lon_origin": 0,
     "frame_interval":10,
+
     "//": "Raster parameters",
     "raster_size": [256,128],
     "pixel_size": [0.5,0.5],
     "ego_center": [0.25,0.5],
+
     "//": "Vetorization parameters",
     "other_agents_num": 10,
     "max_agents_distance": 35,
@@ -21,12 +23,31 @@
     "max_points_per_crosswalk": 20,
     "//": "maximum radius around the AoI for which we retrieve",
     "max_retrieval_distance": 35,
+
     "//": "Model parameters",
     "model_architecture":"resnet50",
     "history_num_frames": 10, 
     "history_num_ego_frames":1,
     "future_num_frames": 5,
+    "base_dir":"D:/Code/INTERACTION_Dataset/",
+    "model_save": true,
+
+    "//": "SafetyNet parameters",
+    "disable_other_agents": false,
+    "disable_map": false,
+    "disable_lane_boundaries": false,
+    "global_head_dropout": 0.0,
+    "detach_unroll": true, 
+    "warmup_num_frames": 0, 
+    "discount_factor": 0.8, 
+
     "//": "Training parameters",
     "batch_size":32,
-    "num_workers":0
+    "num_workers":0,
+    "epoch":1,
+    
+    "//": "Simulation parameters",
+    "sim_scenario_name": "DR_USA_Intersection_EP0",
+    "sim_steps":110
 }
+
