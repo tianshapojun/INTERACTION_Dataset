@@ -36,7 +36,7 @@ class RasterizedPlanningModel(nn.Module):
         num_targets: int,
         weights_scaling: List[float],
         criterion: nn.Module,
-        pretrained: bool = True,
+        pretrained: bool = True
     ) -> None:
         """Initializes the planning model.
 
@@ -83,20 +83,25 @@ class RasterizedPlanningModel(nn.Module):
         # [batch_size, channels, height, width]
         image_batch = torch.cat((data_batch["box_img"],data_batch["way_img"],data_batch["rel_img"]), dim = -1)
         image_batch = image_batch.permute(0,3,1,2)
+        
         # [batch_size, num_steps * 3]
         outputs = self.model(image_batch)
         batch_size = len(data_batch["box_img"])
+        #print(outputs)
 
         if self.training:
+            #print(outputs)
             if self.criterion is None:
                 raise NotImplementedError("Loss function is undefined.")
             # [batch_size, num_steps * 3]
-            targets = data_batch['ego_features'].view(batch_size, -1)
-            target_weights = (torch.ones([batch_size,int(self.num_targets/3),1])* self.weights_scaling).view(batch_size, -1)
+            targets = data_batch['ego_targets'].view(batch_size, -1)
+            target_weights = (data_batch['ego_availabilities'].unsqueeze(-1) * self.weights_scaling).view(batch_size, -1)
             loss = torch.mean(self.criterion(outputs, targets) * target_weights)
             train_dict = {"loss": loss}
+            #print(targets)
             return train_dict
         else:
+            #print(outputs)
             predicted = outputs.view(batch_size, -1, 3)
             # [batch_size, num_steps, 2->(XY)]
             pred_positions = predicted[:, :, :2]
@@ -104,3 +109,4 @@ class RasterizedPlanningModel(nn.Module):
             pred_yaws = predicted[:, :, 2:3]
             eval_dict = {"positions": pred_positions, "yaws": pred_yaws}
             return eval_dict
+        
