@@ -1,6 +1,6 @@
 # Rasterization + ResNet50
 
-前10帧为真实数据，后续交通流为模型仿真，主车位于(0,0处)。
+环境车皆为真实数据；主车前10帧为真实数据，后续交通流为模型仿真，主车位于(0,0处)。
 
 <img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/18ec48be-2b91-44e8-9c10-d5e4cecc6d7f" width="450px">
 <img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/0f7029fa-42ac-48a4-a514-43a9eff9c618" width="450px">
