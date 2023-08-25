@@ -10,3 +10,12 @@ $$\mathcal{L}(\theta) = - \sum_{m=1}^M \sum_{k=1}^K 1\{k = \hat{k}^m\} \left[ \l
 <img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/577500f7-2b0a-4a3d-9249-5ad64bc8287d" width="450px">
 <img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/782b4fae-74d2-4c63-b9a7-111a13be743a" width="450px">
 <img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/1ffe2353-fdc9-4ada-93c4-da9336015186" width="450px">
+
+# Multipath, K=10, yaw optimized
+
+<img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/804e37d6-2ad9-4238-a4bd-3007bab79596" width="450px">
+<img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/4d969157-1c11-40ba-9980-0eb63180adcc" width="450px">
+<img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/28f04173-3947-4bf7-8213-dd119fba746a" width="450px">
+<img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/9b8dda0b-acb6-46c0-bbf9-46c913a8d30e" width="450px">
+<img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/7b1e027c-49f4-4f16-9c83-aadb507beae5" width="450px">
+<img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/c37861e8-5064-43a2-8480-fdb075cfd467" width="450px">
