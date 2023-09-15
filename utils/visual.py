@@ -4,15 +4,16 @@ from matplotlib.animation import FuncAnimation, writers
 import numpy as np 
 
 def raster_visual_fig(config, box_img, map_img_1, map_img_2):
-    plt.subplot(2,3,1)
-    plt.imshow(box_img[...,config["history_num_frames"]])
-    plt.subplot(2,3,2)
-    plt.imshow(map_img_2)
-    plt.subplot(2,3,3)
-    plt.imshow(box_img[...,config["history_num_frames"]] + map_img_1[:,:,2])
+    for i in range(config["history_num_frames"]+1):
+        plt.subplot(config["history_num_frames"]+1,2,2*i+1)
+        plt.imshow(box_img[...,i],aspect='auto')
+    plt.subplot(5,2,2)
+    plt.imshow(box_img[...,config["history_num_frames"]] + map_img_1[:,:,2],aspect='auto')    
     for i in range(3):
-        plt.subplot(2,3,i+4)    
-        plt.imshow(map_img_1[:,:,i])
+        plt.subplot(5,2,2*(i+2))    
+        plt.imshow(map_img_1[:,:,i],aspect='auto')
+    plt.subplot(5,2,10)
+    plt.imshow(map_img_2,aspect='auto')
     plt.show()
     
 def raster_visual_anim(N, box_img, map_img_1, save_flg = False):
