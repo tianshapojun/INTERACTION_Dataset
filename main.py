@@ -17,7 +17,8 @@ from torch.utils.data import Dataset,DataLoader
 import torch.nn as nn
 import datetime 
 from torch.utils.tensorboard import SummaryWriter
-
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from utils import map_vis_without_lanelet
 from utils import dataset_reader
@@ -26,9 +27,18 @@ from utils import map_api
 from utils import visual
 from utils import model_raster
 from utils.model_vector import VectorizedUnrollModel
+from utils import model_raster_detr
+from utils import model_raster_vit
+from utils import model_raster_pre
 
 N_past_track = 10
-N_future_track = 5
+N_future_track = 10
+
+#config_filename = "./config1.json"
+parser = argparse.ArgumentParser()
+parser.add_argument("--config_filename", type=str, default = "D:/Code/INTERACTION_Dataset/config.json")
+args = parser.parse_args()
+config_filename = args.config_filename
 
 def is_satisfy(frame_list,past_num,future_num,frame_interval):
     temp_list = []
@@ -62,7 +72,9 @@ def rasterize(track_dictionary, map, frame_id, num_past, num_ego_past, num_futur
             , x, y, psd, raster_size, pixel_size, ego_center)
     map_img_1, map_img_2 = map_vis_without_lanelet.map_raster(map, x, y, psd, raster_size, pixel_size, ego_center)
     ego_features = vectorizer.vectorize_ego(track_id, num_ego_past, history_track,current_track,future_track)
-    return box_img.astype(np.float32)/255, map_img_1.astype(np.float32)/255, map_img_2.astype(np.float32)/255, ego_features
+    inact_features = vectorizer.vectorize_inact(map, history_track, num_ego_past,track_id, frame_id)
+    return box_img.astype(np.float32)/255, map_img_1.astype(np.float32)/255, map_img_2.astype(np.float32)/255, ego_features, inact_features
+    #return box_img.astype(np.float32)/255, map_img_1.astype(np.float32)/255, map_img_2.astype(np.float32)/255, ego_features
 
 def vectorize(config, map, track_id, frame_id, history_track, current_track, future_track):
     ego_features = vectorizer.vectorize_ego(track_id, config["history_num_ego_frames"], history_track,current_track,future_track)
@@ -78,22 +90,30 @@ def vectorize(config, map, track_id, frame_id, history_track, current_track, fut
 
 class RasterDataset(Dataset):
     
-    def __init__(self, config, agent_sample, track_df, map):
+    def __init__(self, config, agent_sample, track_df, map, anchor):
         super().__init__()
         self.config = config
         self.agent_sample = agent_sample
         self.track_df = track_df
         self.map = map
+        self.anchor = anchor
     
     def __getitem__(self, index):
-        case_id,track_id,frame_id = self.agent_sample[index]['case_id'], self.agent_sample[index]['track_id'], self.agent_sample[index]['frame_id']
-        track_dictionary = self.track_df[(self.track_df['case_id'] == case_id)  & (self.track_df['frame_id'] >= frame_id - self.config["history_num_frames"])
+        scenario,case_id,track_id,frame_id = self.agent_sample[index]['scenario'], self.agent_sample[index]['case_id'], self.agent_sample[index]['track_id'], self.agent_sample[index]['frame_id']
+        track_dictionary = self.track_df[(self.track_df['case_id'] == case_id) & (self.track_df['scenario'] == scenario) 
+            & (self.track_df['frame_id'] >= frame_id - self.config["history_num_frames"])
             & (self.track_df['frame_id'] <= frame_id + self.config["future_num_frames"])]
-        box_img, map_img_1, map_img_2, ego_features = rasterize(track_dictionary, self.map, frame_id, self.config["history_num_frames"], self.config["history_num_ego_frames"], self.config["future_num_frames"]
+        box_img, map_img_1, map_img_2, ego_features, inact_features = rasterize(track_dictionary, self.map[scenario], frame_id, self.config["history_num_frames"], self.config["history_num_ego_frames"], self.config["future_num_frames"]
             , track_id, self.config["raster_size"], self.config["pixel_size"], self.config["ego_center"])
         label = np.concatenate((ego_features["target_positions"], ego_features["target_yaws"]), axis = -1)
+        target = ego_features["target_positions"][:,0:2].flatten()
+        dist = np.linalg.norm(self.anchor - target, axis=-1)
+        #ego_f = np.concatenate((ego_features["history_speed"][:self.config["history_num_ego_frames"]+1]
+            #, ego_features["history_yaws"][:self.config["history_num_ego_frames"]+1,None],inact_features["mid_feat"]), axis = -1)
+        ego_f = inact_features["mid_feat"]
         return {"box_img":box_img, "way_img":map_img_1, "rel_img":map_img_2
-                , "ego_targets":label, "ego_availabilities":ego_features["target_availabilities"]}
+                , "ego_targets":label, "ego_availabilities":ego_features["target_availabilities"]
+                ,"ego_extent":ego_features["extent"], "ego_features":ego_f, "anchor_id": np.argsort(dist)[0], "anchor_ref": self.anchor[np.argsort(dist)[0]]}
     
     def __len__(self):
         return len(agent_sample)
@@ -108,30 +128,68 @@ class VectorDataset(Dataset):
         self.map = map
     
     def __getitem__(self, index):
-        case_id,track_id,frame_id = self.agent_sample[index]['case_id'], self.agent_sample[index]['track_id'], self.agent_sample[index]['frame_id']
+        scenario,case_id,track_id,frame_id = self.agent_sample[index]['scenario'], self.agent_sample[index]['case_id'], self.agent_sample[index]['track_id'], self.agent_sample[index]['frame_id']
         #print(case_id,track_id,frame_id)
-        id_track = track_df[track_df['case_id'] == case_id]
+        id_track = track_df[(track_df['scenario'] == scenario) & (track_df['case_id'] == case_id)]
         history_track = id_track[(id_track['frame_id'] >= frame_id - self.config["history_num_frames"]) & (id_track['frame_id'] <= frame_id)]
         current_track = id_track[id_track['frame_id'] == frame_id]
         future_track = id_track[(id_track['frame_id'] >= frame_id + 1) & (id_track['frame_id'] <= frame_id + self.config["future_num_frames"])]
-        return vectorize(config, map, track_id, frame_id, history_track, current_track, future_track)
+        return vectorize(config, map[scenario], track_id, frame_id, history_track, current_track, future_track)
     
     def __len__(self):
         return len(agent_sample)
 
 def train(config, dataset, model_name):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    #dist.init_process_group(backend='nccl') 
+    #local_rank = int(os.environ["LOCAL_RANK"])
+    #torch.cuda.set_device(local_rank)
+    #device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device('cpu')
     print(device)
-    if model_name == "ResNet":
+    if model_name == "resnet":
         model = model_raster.RasterizedPlanningModel(
             model_arch = config["model_architecture"],
             num_input_channels = config['history_num_frames']+1+3+1,
+            ego_input_channels = config['history_num_ego_frames'] + 1,
             num_targets=3 * config["future_num_frames"],  # X, Y, Yaw * number of future states,
-            weights_scaling= [1., 1., 1.],
+            weights_scaling= config["weights_scaling"],
             criterion=nn.MSELoss(reduction="none"),
+            lmbda = config["lmbda"],
+            lmbda_occ = config["lmbda_occ"],
+            lmbda_ego = config["lmbda_ego"],
+            raster_size = config["raster_size"],
+            pixel_size = config["pixel_size"],
+            ego_center = config["ego_center"]
             )
-    elif model_name == "SafetyNet":
-        weights_scaling = [1.0, 1.0, 1.0]
+    elif model_name == "vit":
+        model = model_raster_vit.RasterizedPlanningModel(
+            model_arch = config["model_architecture"],
+            num_input_channels = config['history_num_frames']+1+3+1,
+            ego_input_channels = config['history_num_ego_frames'] + 1,
+            num_targets=3 * config["future_num_frames"],  # X, Y, Yaw * number of future states,
+            weights_scaling= config["weights_scaling"],
+            criterion=nn.MSELoss(reduction="none"),
+            lmbda = config["lmbda"],
+            lmbda_occ = config["lmbda_occ"],
+            lmbda_ego = config["lmbda_ego"],
+            raster_size = config["raster_size"],
+            pixel_size = config["pixel_size"],
+            ego_center = config["ego_center"],
+            )
+    elif model_name == "resnet_detr":
+        model = model_raster_detr.RasterizedPlanningModel(
+            model_arch = config["model_architecture"],
+            num_input_channels = config['history_num_frames']+1+3+1,
+            num_targets=3 * config["future_num_frames"],  # X, Y, Yaw * number of future states,
+            weights_scaling= config["weights_scaling"],
+            criterion=nn.MSELoss(reduction="none"),
+            lmbda = config["lmbda"],
+            raster_size = config["raster_size"],
+            pixel_size = config["pixel_size"],
+            ego_center = config["ego_center"]
+            )
+    elif model_name == "safetynet":
+        weights_scaling = config["weights_scaling"]
         _num_predicted_frames = config["future_num_frames"]
         _num_predicted_params = len(weights_scaling)
         model = VectorizedUnrollModel(
@@ -146,35 +204,53 @@ def train(config, dataset, model_name):
             disable_lane_boundaries=config["disable_lane_boundaries"],
             detach_unroll=config["detach_unroll"],
             warmup_num_frames=config["warmup_num_frames"],
-            discount_factor=config["discount_factor"]
+            discount_factor=config["discount_factor"],
+            lmbda = config["lmbda"]
         )
 
     else:
         raise IOError("You must specify a model.")
     
     model = model.to(device)
+    #model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
     total = sum([param.nelement() for param in model.parameters()])
     print("Number of parameter: %.2fM" % (total/1e6))
     
     # Model Output Checking
     if False:
-        model.load_state_dict(torch.load("D:/Code/INTERACTION_Dataset/model/2023-07-28_00.pth",map_location=torch.device('cpu')))
+        model.load_state_dict(torch.load("./model/2023-08-02-07:43_08.pth"))
         model.eval()
-        data = {k: torch.tensor(v).unsqueeze(0).to(device) for k, v in dataset[0].items()}
-        print(dataset[0]['ego_targets'])
+        tt = 2
+        data = {k: torch.tensor(v).unsqueeze(0).to(device) for k, v in dataset[tt].items()}
+        #print(dataset[tt]['target_positions'],dataset[tt]['target_yaws'])
         out = model(data)
-        #for key,value in out.items():
-            #print(key,value)
+        for key,value in out.items():
+            print(key,value)
         hhh
     
-    # Prepare for Training Rasterization Data 
+    # Prepare for Training Rasterization Data
+    #train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+    #train_dataloader = DataLoader(dataset, batch_size = config["batch_size"], 
+                             #num_workers = config["num_workers"], sampler=train_sampler)
     train_dataloader = DataLoader(dataset, shuffle=True, batch_size = config["batch_size"], 
                              num_workers = config["num_workers"])
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    writer = SummaryWriter(config["base_dir"]+'cache')
+    #os.makedirs(config["base_dir"]+'cache/{}_'.format(config_filename[2:-5])+ datetime.datetime.now().strftime('%Y-%m-%d-%H'), exist_ok=True)
+    writer = SummaryWriter(config["base_dir"]+'cache/vit_cmb_'+datetime.datetime.now().strftime('%Y-%m-%d-%H'))
+    
+    if False:
+        model.load_state_dict(torch.load("./model/2023-08-04-09:57_00.pth"))
+        model.eval()
+        for data in train_dataloader:
+            data = {k: v.to(device) for k, v in data.items()}
+            out = model(data)
+            print(out['positions'][:3])
+            print(data["target_positions"][:3])
+            hhh
     
     iter = 0
     for epoch in range(config["epoch"]):
+        #train_dataloader.sampler.set_epoch(epoch)
         iterator = tqdm(train_dataloader)
         model.train()
         for data in iterator:
@@ -188,8 +264,8 @@ def train(config, dataset, model_name):
         
             iter +=1
             writer.add_scalar("TotalLoss", loss.item(), iter)
-        if config["model_save"] and epoch % 2 ==0:
-            model_path = config["base_dir"] + 'model/' + datetime.datetime.now().strftime('%Y-%m-%d-%H:%M') + '_' +'{:02}.pth'.format(epoch)
+        if config["model_save"] and epoch %3 == 0: 
+            model_path = config["base_dir"] + 'model/vit_cmb_{}_'.format(config_filename[2:-5]) + datetime.datetime.now().strftime('%Y-%m-%d-%H-%M') + '_' +'{:02}.pth'.format(epoch)
             os.makedirs(config["base_dir"] +'model', exist_ok=True)
             torch.save(model.state_dict(), model_path)
             print('Saved checkpoints at', model_path)
@@ -197,13 +273,7 @@ def train(config, dataset, model_name):
 
 if __name__ == "__main__":
     
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--N_past_track", type=int, default = 10, nargs="?")
-    parser.add_argument("--N_future_track", type=int, default = 1, nargs="?")
-    parser.add_argument("--config_filename", type=str, default = "D:/Code/INTERACTION_Dataset/config.json")
-    args = parser.parse_args()
-    
-    with open(args.config_filename, 'r') as f:
+    with open(config_filename, 'r') as f:
         config = json.loads(f.read())
 
     if config["scenario_name"] is None:
@@ -224,82 +294,68 @@ if __name__ == "__main__":
     maps_dir = os.path.join(root_dir, "maps")
 
     lanelet_map_ending = ".osm"
-    lanelet_map_file = os.path.join(maps_dir, config["scenario_name"] + lanelet_map_ending)
-
-    scenario_dir = os.path.join(tracks_dir, config["scenario_name"])
-
-    track_file_name = os.path.join(
-        scenario_dir,
-        "vehicle_tracks_" + str(config["track_file_number"]).zfill(3) + ".csv"
-    )
+    map = dict()
     
-    # Construct map
-    map = map_api.map_api(config, lanelet_map_file, lat_origin, lon_origin)
-    # Construct samples
-    print("Constructing samples...")
-    track_df = pd.read_csv(track_file_name)
-    track_df = track_df[track_df['agent_type'] == 'car']   
-    print('Total:{} scenes'.format(len(list(track_df['case_id'].unique()))))
+    for sc_name in config["scenario_name"]:
+        print("Loading {}".format(sc_name))
+        lanelet_map_file = os.path.join(maps_dir, sc_name + lanelet_map_ending)
+
+        scenario_dir = os.path.join(tracks_dir, sc_name)
+
+        track_file_name = os.path.join(
+            scenario_dir,
+            "vehicle_tracks_" + str(config["track_file_number"]).zfill(3) + ".csv"
+        )
+    
+        # Construct map
+        map[sc_name] = map_api.map_api(config, lanelet_map_file, lat_origin, lon_origin)
+        # Construct samples
+        print("Constructing samples...")
+        track_df = pd.read_csv(track_file_name)
+        track_df = track_df[track_df['agent_type'] == 'car'] 
+        track_df['scenario'] = sc_name
+        try:
+            track_all = pd.concat([track_all,track_df],axis=0)  
+        except: 
+            track_all = track_df
+    for sc_name in config["scenario_name"]:
+        print('Scenario:{}, Total:{} scenes'.format(sc_name,len(list(track_all[track_all["scenario"]==sc_name]['case_id'].unique()))))
     agent_sample = []
-    #for i in list(track_df['case_id'].unique()):
-    for i in range(10):
-        temp = track_df[track_df['case_id'] == i]
-        for j in list(temp['track_id'].unique()):
-            agent_sample += [ {'case_id':i,'track_id':j,'frame_id':k} for k in 
-                 is_satisfy(list(temp[temp['track_id'] == j]['frame_id'].unique()), N_past_track, N_future_track, config['frame_interval'])]
+    for sc_name in config["scenario_name"]:
+        track_df = track_all[track_all['scenario'] == sc_name]
+        #for i in list(track_df['case_id'].unique()):
+            #if i>1700:
+                #break
+        for i in range(10):
+            temp = track_df[track_df['case_id'] == i]
+            for j in list(temp['track_id'].unique()):
+                if j <= 5 or sc_name == "DR_USA_Intersection_EP0":
+                    agent_sample += [ {'scenario':sc_name,'case_id':i,'track_id':j,'frame_id':k} for k in 
+                        is_satisfy(list(temp[temp['track_id'] == j]['frame_id'].unique()), N_past_track, N_future_track, config['frame_interval'])]
+                else:
+                    break
     print('Total:{} samples'.format(len(agent_sample)))
+    
+    with open("DR_USA_Intersection_EP0_anchor_mod_6.pkl", "rb") as f:
+        anchor = pickle.load(f)
     print("Constructing RasterDataset...")
-    raster_dataset = RasterDataset(config, agent_sample, track_df, map)
+    raster_dataset = RasterDataset(config, agent_sample, track_all, map, anchor)
     assert config["history_num_frames"] <= N_past_track
     assert config["history_num_ego_frames"] <= config["history_num_frames"]
     assert config["future_num_frames"] <= N_future_track
-    vector_dataset = VectorDataset(config, agent_sample, track_df, map)
+    vector_dataset = VectorDataset(config, agent_sample, track_all, map)
+    
     '''
-    temp = vector_dataset[25]
-    fig = plt.figure()
-    for i in range(config["max_num_lanes"]):
-        #plt.subplot(5,2,i+1)
-        plt.plot(temp['lanes'][2*i][:,0],temp['lanes'][2*i][:,1],'b')
-        plt.plot(temp['lanes'][2*i+1][:,0],temp['lanes'][2*i+1][:,1],'b')
-        plt.plot(temp['lanes_mid'][i][:,0],temp['lanes_mid'][i][:,1],'r--')
+    ii = 2
+    box_img = raster_dataset[2]["box_img"]
+    for i in range(11):
+        plt.subplot(1,11,i+1)
+        plt.imshow(box_img[...,i])
     plt.show()
-    hhh
+    hhhh
     '''
     
-    ### One Sample
-    ###
-    ###
-    '''
-    i = 5
-    case_id,track_id,frame_id = agent_sample[i]['case_id'],agent_sample[i]['track_id'],agent_sample[i]['frame_id']
-    temp = track_df[(track_df['case_id'] == case_id) & (track_df['track_id'] == track_id) & (track_df['frame_id'] == frame_id)]
-    print(temp['x'].iloc[0],temp['y'].iloc[0],temp['psi_rad'].iloc[0])
-    print(case_id,track_id,frame_id)
-    '''
-    
-    # load the tracks
-    # plot by matplotlib
-    '''
-    print("Loading tracks using matplotlib...")
-    track_dictionary = dataset_reader.read_tracks(track_file_name,case_id)
-    plot_agent(frame_id,track_dictionary,lanelet_map_file,lat_origin,lon_origin,temp['x'].iloc[0],temp['y'].iloc[0],temp['psi_rad'].iloc[0])
-    plt.show()
-    '''
-    
-    # Rasterization Features
-    '''
-    i=5
-    box_img = raster_dataset[i]["box_img"]
-    map_img_1 = raster_dataset[i]["way_img"]
-    map_img_2 = raster_dataset[i]["rel_img"]
-    ego_targets = raster_dataset[i]['ego_targets']
-    '''
-    
-    # Visualizaiton
-    #visual.raster_visual_fig(config,box_img,map_img_1,map_img_2) 
-    # Animation of Rasterization Images
-    #visual.raster_visual_anim(config["history_num_frames"]+1, box_img, map_img_1, save_flg=False) 
-    
-    #'''
-    #train(config, raster_dataset, "ResNet")
-    train(config, vector_dataset, "SafetyNet")
+    if config["model_name"] == "safetynet":
+        train(config, vector_dataset, config["model_name"])
+    else: 
+        train(config, raster_dataset, config["model_name"])
