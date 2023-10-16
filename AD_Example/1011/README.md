@@ -10,3 +10,9 @@
 <img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/d52d774e-112f-4930-93b6-6e59751c85a8" width="850px">
 <img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/ff4b50df-86d9-42b5-81b4-754b5331fd9e" width="850px">
 <img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/c927d071-e202-4443-825a-c3623f0c856a" width="850px">
+
+# 根据样本添加车辆样例
+
+<img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/3cc97b2c-c67e-4438-baef-962492d964c4" width="450px">
+<img src="https://github.com/tianshapojun/INTERACTION_Dataset/assets/10208337/4b5a506d-128e-43ec-8e2b-c7c282ba50d9" width="450px">
+
